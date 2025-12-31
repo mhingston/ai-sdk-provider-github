@@ -1,0 +1,49 @@
+{
+  "name": "ai-sdk-provider-github",
+  "version": "0.1.0",
+  "description": "GitHub Copilot Provider for Vercel AI SDK with automatic authentication",
+  "author": "Mark Hingston",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mhingston/ai-sdk-provider-github.git"
+  },
+  "homepage": "https://github.com/mhingston/ai-sdk-provider-github#readme",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "demo": "npx tsx examples/demo.ts"
+  },
+  "dependencies": {
+    "@ai-sdk/provider-utils": "^3.0.10",
+    "@opeoginni/github-copilot-openai-compatible": "^0.1.21",
+    "ai": "^5.0.117"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.3",
+    "tsup": "^8.0.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.1.6"
+  },
+  "keywords": [
+    "ai-sdk",
+    "github",
+    "copilot",
+    "openai",
+    "llm",
+    "vercel"
+  ]
+}
