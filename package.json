@@ -1,6 +1,6 @@
 {
   "name": "ai-sdk-provider-github",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "GitHub Copilot Provider for Vercel AI SDK with automatic authentication",
   "author": "Mark Hingston",
   "license": "MIT",
@@ -28,8 +28,8 @@
     "demo": "npx tsx examples/demo.ts"
   },
   "dependencies": {
-    "@ai-sdk/openai-compatible": "^2.0.0",
-    "@ai-sdk/provider-utils": "^4.0.0"
+    "@ai-sdk/openai-compatible": "^2.0.2",
+    "@ai-sdk/provider-utils": "^4.0.2"
   },
   "peerDependencies": {
     "ai": ">=6.0.0"

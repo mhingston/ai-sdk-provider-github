@@ -94,7 +94,7 @@ export function createCopilot(options: CopilotProviderOptions = {}): OpenAICompa
             // Remove API key from header if present (we use Bearer token)
             delete headers['x-api-key'];
 
-            if (debug) {
+            if (debug || process.env.DEBUG_PROVIDER) {
                 console.log(`[CopilotFetch] URL: ${url}`);
                 console.log(`[CopilotFetch] Token: ${token.substring(0, 10)}...`);
             }
