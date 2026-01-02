@@ -72,6 +72,9 @@ export function createCopilot(options: CopilotProviderOptions = {}): GitHubCopil
         baseURL,
         headers: options.headers,
         async fetch(input, init) {
+            // Fix tool schemas if running in strict validation context
+            fixToolSchemas(init);
+
             // Get a valid token (auto-refresh if needed)
             const token = await authManager.getValidToken();
 
@@ -201,6 +204,9 @@ export async function createCopilotWithDeviceFlow(
             baseURL,
             headers: options.headers,
             async fetch(input, init) {
+                // Fix tool schemas if running in strict validation context
+                fixToolSchemas(init);
+
                 const token = await authManager.getValidToken();
                 const copilotHeaders = authManager.getCopilotHeaders();
 
@@ -238,6 +244,33 @@ export async function createCopilotWithDeviceFlow(
         userCode,
         waitForAuth: pollForToken,
     };
+}
+
+// Helper to fix missing type: object in tool schemas
+function fixToolSchemas(init?: RequestInit) {
+    if (!init?.body) return;
+    try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const body: any = typeof init.body === 'string' ? JSON.parse(init.body) : init.body;
+
+        if (body?.tools && Array.isArray(body.tools)) {
+            let changed = false;
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            for (const tool of body.tools as any[]) {
+                if (tool.type === 'function' && tool.function?.parameters) {
+                    if (!tool.function.parameters.type || tool.function.parameters.type === 'None') {
+                        tool.function.parameters.type = 'object';
+                        changed = true;
+                    }
+                }
+            }
+            if (changed && typeof init.body === 'string') {
+                init.body = JSON.stringify(body);
+            }
+        }
+    } catch {
+        // Ignore parse errors
+    }
 }
 
 // Default export for convenience
