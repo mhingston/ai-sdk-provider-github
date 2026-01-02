@@ -1,184 +1,127 @@
-import {
-    createGitHubCopilotOpenAICompatible,
-    type GitHubCopilotProvider,
-} from '@opeoginni/github-copilot-openai-compatible';
+import { createOpenAICompatible, type OpenAICompatibleProvider } from '@ai-sdk/openai-compatible';
 import { AuthManager } from './auth-manager';
 import type { CopilotProviderOptions } from './types';
 
 // Re-export types
 export type { CopilotProviderOptions } from './types';
-export type { GitHubCopilotModelId, GitHubCopilotProvider } from '@opeoginni/github-copilot-openai-compatible';
 export { AuthManager } from './auth-manager';
 export { readCliToken, getConfigPaths } from './cli-token-store';
 
 /**
- * Input types that indicate agentic behavior (from Responses API).
- * Used to set appropriate headers for the request.
- */
-const RESPONSES_API_ALTERNATE_INPUT_TYPES = [
-    'file_search_call',
-    'computer_call',
-    'computer_call_output',
-    'web_search_call',
-    'function_call',
-    'function_call_output',
-    'image_generation_call',
-    'code_interpreter_call',
-    'local_shell_call',
-    'local_shell_call_output',
-    'mcp_list_tools',
-    'mcp_approval_request',
-    'mcp_approval_response',
-    'mcp_call',
-    'reasoning',
-];
-
-/**
  * Create a GitHub Copilot provider with automatic authentication.
- * 
- * This provider wraps @opeoginni/github-copilot-openai-compatible and handles
- * authentication automatically by:
- * 
- * 1. Looking for existing OAuth tokens in the GitHub Copilot CLI config
- * 2. Exchanging the OAuth token for a short-lived Copilot API token
- * 3. Automatically refreshing the token when it expires
- * 
- * @example
- * ```typescript
- * import { createCopilot } from 'ai-sdk-provider-github';
- * import { generateText } from 'ai';
- * 
- * const copilot = createCopilot();
- * 
- * const { text } = await generateText({
- *   model: copilot('gpt-4o'),
- *   prompt: 'Hello, world!',
- * });
- * ```
  */
-export function createCopilot(options: CopilotProviderOptions = {}): GitHubCopilotProvider {
+export function createCopilot(options: CopilotProviderOptions = {}): OpenAICompatibleProvider {
     const authManager = new AuthManager(options);
     const debug = options.debug ?? false;
 
-    // Determine base URL
+    // Determine base URL (defaulting to strict valid Copilot API domain)
     const baseURL = options.baseURL ?? (
         options.enterpriseUrl
             ? `https://copilot-api.${options.enterpriseUrl.replace(/^https?:\/\//, '').replace(/\/$/, '')}`
             : 'https://api.githubcopilot.com'
     );
 
-    // Create the underlying provider with our custom fetch
-    return createGitHubCopilotOpenAICompatible({
+    const provider = createOpenAICompatible({
+        name: 'github-copilot',
         baseURL,
         headers: options.headers,
-        async fetch(input, init) {
-            // Fix tool schemas if running in strict validation context
-            fixToolSchemas(init);
+        fetch: async (input, init) => {
+            // 1. Endpoint Routing: Special handling for Codex vs others
+            let url = input.toString();
 
-            // Get a valid token (auto-refresh if needed)
-            const token = await authManager.getValidToken();
-
-            // Determine request characteristics for special headers
-            let isAgentCall = false;
-            let isVisionRequest = false;
-
-            try {
-                const body = typeof init?.body === 'string'
-                    ? JSON.parse(init.body)
-                    : init?.body;
-
-                // Check for chat completions format
-                if (body?.messages) {
-                    isAgentCall = body.messages.some(
-                        (msg: { role?: string }) => msg.role && ['tool', 'assistant'].includes(msg.role)
-                    );
-                    isVisionRequest = body.messages.some(
-                        (msg: { content?: Array<{ type?: string }> }) =>
-                            Array.isArray(msg.content) &&
-                            msg.content.some((part) => part.type === 'image_url')
-                    );
-                }
-
-                // Check for responses API format
-                if (body?.input) {
-                    const lastInput = body.input[body.input.length - 1];
-                    const isAssistant = lastInput?.role === 'assistant';
-                    const hasAgentType = lastInput?.type
-                        ? RESPONSES_API_ALTERNATE_INPUT_TYPES.includes(lastInput.type)
-                        : false;
-                    isAgentCall = isAssistant || hasAgentType;
-
-                    isVisionRequest =
-                        Array.isArray(lastInput?.content) &&
-                        lastInput.content.some((part: { type?: string }) => part.type === 'input_image');
-                }
-            } catch {
-                // Ignore JSON parse errors
+            // If the request body indicates a codex model, we might need to route to /responses?
+            // However, with strict AI SDK patterns, the modelID helps too. 
+            // The original logic used modelId check *before* creating the model.
+            // Here we are inside the fetch, so we check the body.
+            let isCodex = false;
+            let bodyStr = typeof init?.body === 'string' ? init.body : '';
+            if (bodyStr.includes('"model":"gpt-5-codex') || bodyStr.includes('codex')) {
+                isCodex = true;
             }
 
-            // Build headers
+            // Force correct endpoints
+            if (isCodex) {
+                // Ensure we are hitting /responses
+                if (!url.endsWith('/responses')) {
+                    // Try to rewrite if it looks like a chat completion URL
+                    url = url.replace(/\/chat\/completions$/, '/responses');
+                }
+            } else {
+                // Ensure we are hitting /chat/completions (Copilot standard)
+                if (url.endsWith('/responses')) {
+                    url = url.replace('/responses', '/chat/completions');
+                }
+            }
+
+            // 2. Patch Tool Schemas (Copilot Requirement: type: "object")
+            if (bodyStr && !isCodex) { // Codex models on Copilot often don't support tools same way or expect different format
+                try {
+                    const json = JSON.parse(bodyStr);
+                    if (json.tools && Array.isArray(json.tools)) {
+                        let modified = false;
+                        for (const tool of json.tools) {
+                            if (tool.function && tool.function.parameters && !tool.function.parameters.type) {
+                                tool.function.parameters.type = 'object';
+                                modified = true;
+                            }
+                        }
+                        if (modified) {
+                            init = { ...init, body: JSON.stringify(json) };
+                        }
+                    }
+                } catch (e) {
+                    // ignore
+                }
+            }
+
+            // 3. Auth Headers
+            const token = await authManager.getValidToken();
             const copilotHeaders = authManager.getCopilotHeaders();
+
+            const incomingHeaders = (init?.headers as Record<string, string>) || {};
+            const cleanHeaders = Object.fromEntries(
+                Object.entries(incomingHeaders).filter(([k]) => k.toLowerCase() !== 'authorization' && k.toLowerCase() !== 'api-key')
+            );
+
             const headers: Record<string, string> = {
                 ...copilotHeaders,
-                ...(init?.headers as Record<string, string>),
+                ...cleanHeaders,
                 Authorization: `Bearer ${token}`,
                 'Openai-Intent': 'conversation-edits',
-                'X-Initiator': isAgentCall ? 'agent' : 'user',
+                'X-Initiator': 'agent',
             };
 
-            if (isVisionRequest) {
-                headers['Copilot-Vision-Request'] = 'true';
-            }
-
-            // Remove duplicate auth headers (lowercase versions)
+            // Remove API key from header if present (we use Bearer token)
             delete headers['x-api-key'];
-            delete headers['authorization'];
 
             if (debug) {
-                console.log(`[CopilotFetch] ${input}`);
+                console.log(`[CopilotFetch] URL: ${url}`);
+                console.log(`[CopilotFetch] Token: ${token.substring(0, 10)}...`);
             }
 
-            return fetch(input, {
+            return fetch(url, {
                 ...init,
                 headers,
-            });
-        },
+            } as any);
+        }
     });
+
+    return provider;
 }
 
 /**
  * Create a GitHub Copilot provider with device flow authentication.
- * 
- * This is useful when no CLI credentials exist and you need to authenticate
- * the user interactively.
- * 
- * @example
- * ```typescript
- * import { createCopilotWithDeviceFlow } from 'ai-sdk-provider-github';
- * 
- * const { provider, verificationUri, userCode, waitForAuth } = await createCopilotWithDeviceFlow();
- * 
- * console.log(`Please visit ${verificationUri} and enter code: ${userCode}`);
- * await waitForAuth();
- * 
- * // Now you can use the provider
- * const { text } = await generateText({
- *   model: provider('gpt-4o'),
- *   prompt: 'Hello!',
- * });
- * ```
  */
 export async function createCopilotWithDeviceFlow(
     options: Omit<CopilotProviderOptions, 'oauthToken'> = {}
 ): Promise<{
-    provider: GitHubCopilotProvider;
+    provider: OpenAICompatibleProvider;
     verificationUri: string;
     userCode: string;
     waitForAuth: () => Promise<boolean>;
 }> {
     const authManager = new AuthManager(options);
 
-    // If we already have a token, just return the provider
     if (authManager.hasOAuthToken()) {
         return {
             provider: createCopilot(options),
@@ -188,90 +131,30 @@ export async function createCopilotWithDeviceFlow(
         };
     }
 
-    // Initiate device flow
     const { verificationUri, userCode, pollForToken } = await authManager.initiateDeviceFlow();
 
-    // Create a provider that will work after auth completes
-    const createProviderAfterAuth = () => {
-        // The authManager now has the token, create the provider
-        const baseURL = options.baseURL ?? (
-            options.enterpriseUrl
-                ? `https://copilot-api.${options.enterpriseUrl.replace(/^https?:\/\//, '').replace(/\/$/, '')}`
-                : 'https://api.githubcopilot.com'
-        );
+    const createProviderAfterAuth = () => createCopilot(options);
 
-        return createGitHubCopilotOpenAICompatible({
-            baseURL,
-            headers: options.headers,
-            async fetch(input, init) {
-                // Fix tool schemas if running in strict validation context
-                fixToolSchemas(init);
+    let cachedProvider: OpenAICompatibleProvider | null = null;
 
-                const token = await authManager.getValidToken();
-                const copilotHeaders = authManager.getCopilotHeaders();
-
-                return fetch(input, {
-                    ...init,
-                    headers: {
-                        ...copilotHeaders,
-                        ...(init?.headers as Record<string, string>),
-                        Authorization: `Bearer ${token}`,
-                    },
-                });
-            },
-        });
-    };
-
-    // Return placeholder provider and auth function
-    let cachedProvider: GitHubCopilotProvider | null = null;
+    // Proxy for lazy loading
+    const proxyProvider = new Proxy(function () { }, {
+        apply: (_, __, args) => {
+            if (!cachedProvider) cachedProvider = createProviderAfterAuth();
+            return (cachedProvider as any)(...args);
+        },
+        get: (_, prop) => {
+            if (!cachedProvider) cachedProvider = createProviderAfterAuth();
+            return (cachedProvider as any)[prop];
+        }
+    }) as unknown as OpenAICompatibleProvider;
 
     return {
-        provider: new Proxy({} as GitHubCopilotProvider, {
-            apply: (_, __, args) => {
-                if (!cachedProvider) {
-                    cachedProvider = createProviderAfterAuth();
-                }
-                return (cachedProvider as Function)(...args);
-            },
-            get: (_, prop) => {
-                if (!cachedProvider) {
-                    cachedProvider = createProviderAfterAuth();
-                }
-                return (cachedProvider as any)[prop];
-            },
-        }),
+        provider: proxyProvider,
         verificationUri,
         userCode,
         waitForAuth: pollForToken,
     };
 }
 
-// Helper to fix missing type: object in tool schemas
-function fixToolSchemas(init?: RequestInit) {
-    if (!init?.body) return;
-    try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const body: any = typeof init.body === 'string' ? JSON.parse(init.body) : init.body;
-
-        if (body?.tools && Array.isArray(body.tools)) {
-            let changed = false;
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            for (const tool of body.tools as any[]) {
-                if (tool.type === 'function' && tool.function?.parameters) {
-                    if (!tool.function.parameters.type || tool.function.parameters.type === 'None') {
-                        tool.function.parameters.type = 'object';
-                        changed = true;
-                    }
-                }
-            }
-            if (changed && typeof init.body === 'string') {
-                init.body = JSON.stringify(body);
-            }
-        }
-    } catch {
-        // Ignore parse errors
-    }
-}
-
-// Default export for convenience
 export default createCopilot;
