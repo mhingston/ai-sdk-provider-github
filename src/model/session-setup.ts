@@ -1,0 +1,33 @@
+import type { LanguageModelV3CallOptions, LanguageModelV3Prompt, SharedV3Warning } from "@ai-sdk/provider";
+import type { CopilotClient, SystemMessageConfig } from "@github/copilot-sdk";
+import { convertToCopilotMessages } from "../conversion/convert-to-copilot-messages.js";
+
+export interface SessionSetupInput {
+  prompt: LanguageModelV3Prompt;
+  options: LanguageModelV3CallOptions;
+  streaming: boolean;
+  buildSessionConfig: (streaming: boolean, callOptions: LanguageModelV3CallOptions) => Record<string, unknown>;
+  generateWarnings: (options: LanguageModelV3CallOptions) => SharedV3Warning[];
+  getClient: () => CopilotClient;
+  systemMessageFromSettings?: SystemMessageConfig;
+}
+
+export interface SessionSetupResult {
+  prompt: string;
+  attachments: Array<{ type: "file" | "directory"; path: string; displayName?: string }> | undefined;
+  warnings: SharedV3Warning[];
+  session: Awaited<ReturnType<CopilotClient["createSession"]>>;
+}
+
+export async function prepareSession(input: SessionSetupInput): Promise<SessionSetupResult> {
+  const { prompt, options, streaming, buildSessionConfig, generateWarnings, getClient, systemMessageFromSettings } = input;
+  const { prompt: promptText, systemMessage, attachments, warnings: msgWarnings } = convertToCopilotMessages(prompt);
+  const warnings: SharedV3Warning[] = [...generateWarnings(options), ...(msgWarnings?.map(m => ({ type: "other" as const, message: m })) ?? [])];
+  const client = getClient();
+  if (client.getState() !== "connected") await client.start();
+  const session = await client.createSession({
+    ...buildSessionConfig(streaming, options),
+    systemMessage: systemMessage ? { mode: "append", content: systemMessage } : systemMessageFromSettings,
+  });
+  return { prompt: promptText, attachments, warnings, session };
+}

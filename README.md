@@ -1,22 +1,20 @@
 # ai-sdk-provider-github
 
-GitHub Copilot provider for the [Vercel AI SDK](https://sdk.vercel.ai/) with **automatic authentication**.
-
-Uses your existing GitHub Copilot CLI credentials—no manual token management needed.
+GitHub Copilot provider for the [Vercel AI SDK](https://sdk.vercel.ai/) using the official `@github/copilot-sdk`.
 
 ## Installation
 
 ```bash
-npm install ai-sdk-provider-github ai@5
+npm install ai-sdk-provider-github
 ```
 
 ## Quick Start
 
 ```typescript
-import { createCopilot } from 'ai-sdk-provider-github';
+import { createGitHubCopilot } from 'ai-sdk-provider-github';
 import { generateText } from 'ai';
 
-const copilot = createCopilot();
+const copilot = createGitHubCopilot();
 
 const { text } = await generateText({
   model: copilot('gpt-4o'),
@@ -26,25 +24,26 @@ const { text } = await generateText({
 console.log(text);
 ```
 
-## How It Works
+## Authentication
 
-1. **Reads CLI credentials** from `~/.config/github-copilot/apps.json`
-2. **Exchanges** the OAuth token for a short-lived Copilot API token
-3. **Auto-refreshes** tokens before they expire (30 min lifetime)
+The provider uses `@github/copilot-sdk` which handles authentication automatically when Copilot CLI is authenticated (`copilot auth`).
 
-You never manage tokens manually—just use the provider.
+For manual token provision:
+
+```typescript
+const copilot = createGitHubCopilot({
+  oauthToken: 'gho_xxxxx',  // GitHub OAuth token
+});
+```
 
 ## Available Models
 
 All models available through your GitHub Copilot subscription:
 
 ```typescript
-copilot('gpt-4o')           // GPT-4o
-copilot('gpt-4.1')          // GPT-4.1
-copilot('gpt-5')            // GPT-5 (if available)
-copilot('claude-3.5-sonnet') // Claude 3.5 Sonnet
-copilot('claude-3.7-sonnet') // Claude 3.7 Sonnet
-copilot('gemini-2.0-flash-001')
+copilot('gpt-4o')             // GPT-4o
+copilot('gpt-4.1')            // GPT-4.1
+copilot('claude-sonnet-4-20250514') // Claude Sonnet 4
 // ... and more
 ```
 
@@ -65,50 +64,85 @@ for await (const chunk of stream.textStream) {
 }
 ```
 
-## Device Flow (No Existing Credentials)
+## Tools
 
-If you don't have CLI credentials, use device flow authentication:
+Tools are supported via the `providerOptions` execute bridge:
 
 ```typescript
-import { createCopilotWithDeviceFlow } from 'ai-sdk-provider-github';
+import { tool } from 'ai';
+import { z } from 'zod';
 
-const { provider, verificationUri, userCode, waitForAuth } = 
-  await createCopilotWithDeviceFlow();
+const getWeather = tool({
+  description: 'Get weather for a location',
+  inputSchema: z.object({ location: z.string() }),
+  execute: async ({ location }) => {
+    return { weather: 'sunny', temperature: 72 };
+  },
+  providerOptions: {
+    'github-copilot': {
+      execute: async ({ location }) => {
+        return { weather: 'sunny', temperature: 72 };
+      },
+    },
+  },
+});
 
-console.log(`Visit ${verificationUri} and enter: ${userCode}`);
-await waitForAuth();
-
-// Now use the provider
 const { text } = await generateText({
-  model: provider('gpt-4o'),
-  prompt: 'Hello!',
+  model: copilot('gpt-4o'),
+  tools: [getWeather],
+  prompt: 'What is the weather in London?',
 });
 ```
 
 ## Configuration Options
 
 ```typescript
-createCopilot({
-  // Provide OAuth token directly (skips CLI lookup)
+createGitHubCopilot({
+  // Default settings for all models
+  defaultSettings: {
+    model: 'gpt-4o',
+    streaming: true,
+  },
+
+  // Copilot client options (cliPath, cliUrl, etc.)
+  clientOptions: {},
+
+  // GitHub OAuth token (skips SDK auth)
   oauthToken: 'gho_xxxxx',
-  
-  // GitHub Enterprise support
-  enterpriseUrl: 'https://github.mycompany.com',
-  
-  // Custom headers
-  headers: { 'X-Custom': 'value' },
-  
-  // Debug logging
-  debug: true,
+});
+```
+
+### Per-model Settings
+
+```typescript
+const model = copilot('gpt-4o', {
+  model: 'claude-sonnet-4-20250514',  // Override default model
+  streaming: false,                      // Disable streaming
+  tools: [getWeather],                   // Model-specific tools
 });
 ```
 
 ## Prerequisites
 
 - GitHub Copilot subscription
-- Existing credentials from GitHub Copilot CLI, VS Code, or another IDE
+- GitHub Copilot CLI authenticated (`copilot auth`), OR
+- Provide `oauthToken` directly
 
-If you don't have credentials, the [GitHub Copilot CLI](https://docs.github.com/en/copilot/github-copilot-in-the-cli) can authenticate you.
+## Migration from v0.x
+
+**Breaking changes in v1.0.0:**
+
+- Provider renamed from `createCopilot()` to `createGitHubCopilot()`
+- `createCopilotWithDeviceFlow()` removed — authenticate via `copilot auth` CLI command
+- `AuthManager` no longer exported — use `CopilotTokenManager` if needed
+- `readCliToken()` and `getConfigPaths()` no longer exported
+
+**New in v1.0.0:**
+
+- Full `@github/copilot-sdk` integration
+- Native tool support via execute bridge
+- Proper streaming with Copilot session events
+- ProviderV3/LanguageModelV3 implementation
 
 ## License
 
